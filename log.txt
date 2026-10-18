@@ -1,0 +1,9 @@
+My first message!
+TcpListener created and bind
+TcpSender connect
+Connection accepted
+Succesfully got message from stdin
+Succesfully sent message
+Succesfully got message from stdin
+Succesfully sent message
+Succesfully got message from stdin
