@@ -46,9 +46,9 @@ fn reciver_thread(
         .name("Reciver".to_owned())
         .spawn(move || {
             let mut buf = [0; 1000];
-            while *r_run_flag.lock().unwrap() {
-                match listener.accept() {
-                    Ok((mut tcp, _socket)) => {
+            match listener.accept() {
+                Ok((mut tcp, _socket)) => {
+                    while *r_run_flag.lock().unwrap() {
                         log.lock().unwrap().log("Connection accepted".into());
                         match tcp.read(&mut buf) {
                             Ok(_msg_size) => {
@@ -66,8 +66,8 @@ fn reciver_thread(
                             }
                         }
                     }
-                    Err(e) => print!("I got this error: {:?}", e),
                 }
+                Err(e) => print!("I got this error: {:?}", e),
             }
         })
         .expect("Reciver thread crashed");
@@ -79,16 +79,16 @@ fn sender_thread(
     socket: &SocketAddr,
     log: Arc<Mutex<LogFile>>,
 ) -> thread::JoinHandle<()> {
-    let mut sender = TcpStream::connect(socket)
-        .expect(&format_args!("Failed to connect to {}", socket).to_string());
-
-    log.lock().unwrap().log("TcpSender connect".into());
-
+    let socket = socket.clone();
     let sender = thread::Builder::new()
         .name("Sender".to_owned())
         .spawn(move || {
             let stdin = stdin();
             let mut input_buffer = String::with_capacity(1000);
+
+            let mut tcp_stream = TcpStream::connect(socket)
+                .expect(&format_args!("Failed to connect to {}", socket).to_string());
+            log.lock().unwrap().log("TcpSender connect".into());
 
             while *s_run_flag.lock().unwrap() {
                 match stdin.read_line(&mut input_buffer) {
@@ -97,13 +97,12 @@ fn sender_thread(
                             .unwrap()
                             .log("Succesfully got message from stdin".into());
                         let write_buff = input_buffer.clone().into_bytes();
-                        sender
+                        tcp_stream
                             .write_all(write_buff.as_slice())
                             .expect("Failed to write to sender TcpStream");
-                        sender.flush().unwrap();
+                        tcp_stream.flush().unwrap();
 
                         log.lock().unwrap().log("Succesfully sent message".into());
-
                         input_buffer.clear();
                     }
                     Err(e) => {
