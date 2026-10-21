@@ -1,11 +1,17 @@
+mod log_file;
+mod sha_256;
+
 use std::{
     io::{Read, Write, stdin, stdout},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+    ops::Div,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
-use file_share::LogFile;
+use log_file::LogFile;
+use sha_256::Sha256;
 
 fn test() {
     let log: Arc<Mutex<LogFile>> = Arc::new(Mutex::new(LogFile::new()));
@@ -19,14 +25,14 @@ fn test() {
     let mut run = Arc::new(Mutex::new(true));
 
     let s_run_flag = Arc::clone(&mut run);
-    let r_run_flag = Arc::clone(&run);
+    // let r_run_flag = Arc::clone(&run);
 
-    let reciver_thread = reciver_thread(r_run_flag, &socket, Arc::clone(&log));
+    // let reciver_thread = reciver_thread(r_run_flag, &socket, Arc::clone(&log));
     let sender_thread = sender_thread(s_run_flag, &socket, Arc::clone(&log));
 
-    reciver_thread
-        .join()
-        .expect("Failed to join reciver thread");
+    // reciver_thread
+    //     .join()
+    //     .expect("Failed to join reciver thread");
     sender_thread.join().expect("Failed to join sender thread");
 }
 
@@ -116,6 +122,37 @@ fn sender_thread(
     sender
 }
 
+fn scanner() {
+    let socket = 9999;
+    let write_buf = "Uspio sam se spojiti".as_bytes();
+    let all_combos: u32 = 255 * 255;
+    for last_numb in 1..all_combos {
+        let c = last_numb.div(255);
+        let d = last_numb % 255;
+
+        let c = c as u8;
+        let d = d as u8;
+
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, c + 100, d));
+        let socket = SocketAddr::new(ip, socket);
+
+        if let Ok(mut tcp_stream) = TcpStream::connect_timeout(&socket, Duration::from_millis(100))
+        {
+            println!("Succesfully connect to: {}", ip);
+            println!("Local ip: {}", tcp_stream.local_addr().unwrap());
+            println!("Servers ip: {}", tcp_stream.peer_addr().unwrap());
+            tcp_stream.write(write_buf).unwrap();
+            return;
+        } else {
+            println!("Failed to connect to: {}", ip);
+        }
+    }
+}
+
 fn main() {
-    test();
+    let mut sha_256 = Sha256::new();
+    let message = "abc";
+
+    sha_256.update(message.as_bytes());
+    print!("{}", sha_256.finalize())
 }
