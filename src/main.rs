@@ -171,7 +171,7 @@ fn main() {
     while let Ok(n) = file.read(&mut buf) {
         if n > 0 {
             start = Instant::now();
-            sha_256.update(&buf);
+            sha_256.update(&buf[..n]);
             duration_sum += Instant::now().duration_since(start);
             read_count += 1;
         } else {
