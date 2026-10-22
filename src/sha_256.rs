@@ -75,6 +75,7 @@ pub struct Sha256 {
     hash: [u32; 8],
     l: u64,
     rem: Vec<u8>,
+    is_final: bool,
 }
 
 impl Sha256 {
@@ -86,13 +87,12 @@ impl Sha256 {
             ],
             l: 0,
             rem: Vec::with_capacity(64),
+            is_final: false,
         }
     }
 
     fn pad_message(&self) -> Vec<u8> {
         let chunk = self.rem.as_slice();
-        let bit_len = self.l + (chunk.len() as u64 * 8);
-
         let mut msg = Vec::with_capacity(128);
         msg.extend_from_slice(chunk);
         msg.push(0x80);
@@ -100,30 +100,26 @@ impl Sha256 {
             msg.push(0);
         }
 
-        msg.extend_from_slice(&bit_len.to_be_bytes());
+        msg.extend_from_slice(&self.l.to_be_bytes());
 
         msg
     }
 
-    pub fn finalize(mut self) -> String {
-        let padding = self.pad_message();
-        self.update(&padding);
+    pub fn finalize(&mut self) -> String {
+        if !self.is_final {
+            self.l += self.rem.len() as u64 * 8;
+
+            let padding = self.pad_message();
+            padding.chunks_exact(64).for_each(|chunk| {
+                self.hash(chunk);
+            });
+            self.is_final = true;
+        }
 
         self.hash.iter().map(|x| format!("{:08x}", x)).collect()
     }
+
     pub fn update(&mut self, stream: &[u8]) {
-        let mut a = 0u32;
-        let mut b = 0u32;
-        let mut c = 0u32;
-        let mut d = 0u32;
-        let mut e = 0u32;
-        let mut f = 0u32;
-        let mut g = 0u32;
-        let mut h = 0u32;
-
-        let mut t_1 = 0u32;
-        let mut t_2 = 0u32;
-
         let mut new_msg = self.rem.clone();
         new_msg.extend_from_slice(stream);
         self.rem.clear();
@@ -131,65 +127,446 @@ impl Sha256 {
         new_msg.chunks(64).for_each(|chunk| {
             if chunk.len() < 64 {
                 self.rem = Vec::from(chunk);
-                return;
+            } else {
+                self.hash(chunk);
+                self.l += 64 * 8;
             }
-            self.l += (chunk.len() * 8) as u64;
-
-            a = self.hash[0];
-            b = self.hash[1];
-            c = self.hash[2];
-            d = self.hash[3];
-            e = self.hash[4];
-            f = self.hash[5];
-            g = self.hash[6];
-            h = self.hash[7];
-
-            let mut w_arr = [0u32; 64];
-
-            let message: [u32; 16] = std::array::from_fn(|i| {
-                u32::from_be_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap())
-            });
-
-            for t in 0..64 {
-                let w = if t < 16 {
-                    message[t]
-                } else {
-                    [
-                        sigma_1!(w_arr[t - 2]),
-                        w_arr[t - 7],
-                        sigma_0!(w_arr[t - 15]),
-                        w_arr[t - 16],
-                    ]
-                    .iter()
-                    .fold(0u32, |acc, &b| add_mod!(acc, b))
-                };
-                w_arr[t] = w;
-
-                t_1 = [h, sum_1!(e), ch!(e, f, g), SHA256CONSTANT[t], w]
-                    .iter()
-                    .fold(0u32, |acc, &b| add_mod!(acc, b));
-
-                t_2 = [sum_0!(a), maj!(a, b, c)]
-                    .iter()
-                    .fold(0u32, |acc, &b| add_mod!(acc, b));
-                h = g;
-                g = f;
-                f = e;
-                e = add_mod!(d, t_1);
-                d = c;
-                c = b;
-                b = a;
-                a = add_mod!(t_1, t_2);
-            }
-
-            self.hash[0] = add_mod!(self.hash[0], a);
-            self.hash[1] = add_mod!(self.hash[1], b);
-            self.hash[2] = add_mod!(self.hash[2], c);
-            self.hash[3] = add_mod!(self.hash[3], d);
-            self.hash[4] = add_mod!(self.hash[4], e);
-            self.hash[5] = add_mod!(self.hash[5], f);
-            self.hash[6] = add_mod!(self.hash[6], g);
-            self.hash[7] = add_mod!(self.hash[7], h);
         })
+    }
+
+    fn hash(&mut self, msg_chunk: &[u8]) {
+        let mut a = self.hash[0];
+        let mut b = self.hash[1];
+        let mut c = self.hash[2];
+        let mut d = self.hash[3];
+        let mut e = self.hash[4];
+        let mut f = self.hash[5];
+        let mut g = self.hash[6];
+        let mut h = self.hash[7];
+
+        let mut w_arr = [0u32; 64];
+
+        let message: [u32; 16] = std::array::from_fn(|i| {
+            u32::from_be_bytes(msg_chunk[i * 4..i * 4 + 4].try_into().unwrap())
+        });
+
+        for t in 0..64 {
+            let w = if t < 16 {
+                message[t]
+            } else {
+                [
+                    sigma_1!(w_arr[t - 2]),
+                    w_arr[t - 7],
+                    sigma_0!(w_arr[t - 15]),
+                    w_arr[t - 16],
+                ]
+                .iter()
+                .fold(0u32, |acc, &b| add_mod!(acc, b))
+            };
+            w_arr[t] = w;
+
+            let t_1 = [h, sum_1!(e), ch!(e, f, g), SHA256CONSTANT[t], w]
+                .iter()
+                .fold(0u32, |acc, &b| add_mod!(acc, b));
+
+            let t_2 = [sum_0!(a), maj!(a, b, c)]
+                .iter()
+                .fold(0u32, |acc, &b| add_mod!(acc, b));
+            h = g;
+            g = f;
+            f = e;
+            e = add_mod!(d, t_1);
+            d = c;
+            c = b;
+            b = a;
+            a = add_mod!(t_1, t_2);
+        }
+
+        self.hash[0] = add_mod!(self.hash[0], a);
+        self.hash[1] = add_mod!(self.hash[1], b);
+        self.hash[2] = add_mod!(self.hash[2], c);
+        self.hash[3] = add_mod!(self.hash[3], d);
+        self.hash[4] = add_mod!(self.hash[4], e);
+        self.hash[5] = add_mod!(self.hash[5], f);
+        self.hash[6] = add_mod!(self.hash[6], g);
+        self.hash[7] = add_mod!(self.hash[7], h);
+    }
+}
+
+#[cfg(test)]
+mod sha256_test {
+    use super::*;
+
+    #[test]
+    fn empty() {
+        let mut sha = Sha256::new();
+        let msg = "";
+        sha.update(msg.as_bytes());
+        let hash = sha.finalize();
+        assert_eq!(
+            hash,
+            String::from("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        )
+    }
+    #[test]
+    fn abc_test() {
+        let mut sha = Sha256::new();
+        let msg = "abc";
+        sha.update(msg.as_bytes());
+        let hash = sha.finalize();
+        assert_eq!(
+            hash,
+            String::from("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        )
+    }
+
+    #[test]
+    fn abc_split_test() {
+        let mut sha = Sha256::new();
+        let msg = "a";
+        sha.update(msg.as_bytes());
+
+        let msg = "b";
+        sha.update(msg.as_bytes());
+
+        let msg = "c";
+        sha.update(msg.as_bytes());
+
+        let hash = sha.finalize();
+        assert_eq!(
+            hash,
+            String::from("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        )
+    }
+
+    #[test]
+    fn hello_test() {
+        let mut sha = Sha256::new();
+        let msg = "hello";
+        sha.update(msg.as_bytes());
+        let hash = sha.finalize();
+        assert_eq!(
+            hash,
+            String::from("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        )
+    }
+
+    #[test]
+    fn lorem_short_test() {
+        let mut sha = Sha256::new();
+        let msg = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod";
+        sha.update(msg.as_bytes());
+        let hash = sha.finalize();
+        assert_eq!(
+            hash,
+            String::from("43f1030606541df5812e4742226d099b2783f92566f502ec962f92a701fd6575")
+        )
+    }
+
+    #[test]
+    fn lorem_long_test() {
+        let mut sha = Sha256::new();
+        let msg = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem
+        ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt
+        ut labore et dolore magna aliqua enim ad minim veniam quis nostrud
+        exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure
+        lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem
+        ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt
+        ut labore et dolore magna aliqua enim ad minim veniam quis nostrud
+        exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure
+        lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem
+        ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt
+        ut labore et dolore magna aliqua enim ad minim veniam quis nostrud
+        exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure
+        lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem
+        ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt
+        ut labore et dolore magna aliqua enim ad minim veniam quis nostrud
+        exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure
+        lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem
+        ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt
+        ut labore et dolore magna aliqua enim ad minim veniam quis nostrud
+        exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure
+        lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem
+        ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt
+        ut labore et dolore magna aliqua enim ad minim veniam quis nostrud
+        exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure
+        lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem
+        ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt
+        ut labore et dolore magna aliqua enim ad minim veniam quis nostrud
+        exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure
+        lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor
+        incididunt ut labore et dolore magna aliqua enim ad minim veniam quis
+        nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute
+        irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod
+        tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam
+        quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis
+        aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+        eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim
+        veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat
+        duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit sed
+        do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad
+        minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo
+        consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing elit
+        sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim
+        ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea
+        commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur adipiscing
+        elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+        enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex
+        ea commodo consequat duis aute irure lorem ipsum dolor sit amet consectetur
+        adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna
+        aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip
+        ex ea commodo consequat duis aute irure lorem ipsum dolor sit amet
+        consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore
+        magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi
+        aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor sit
+        amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et
+        dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris
+        nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum dolor
+        sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+        et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco
+        laboris nisi aliquip ex ea commodo consequat duis aute irure lorem ipsum
+        dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut
+        labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation
+        ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure lorem";
+        sha.update(msg.as_bytes());
+        let hash = sha.finalize();
+        assert_eq!(
+            hash,
+            String::from("db8c460d072fdd6028107cd89c885da3f9753a64d41038a483dd5c6b481bc12e")
+        )
     }
 }

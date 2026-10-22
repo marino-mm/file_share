@@ -2,17 +2,19 @@ mod log_file;
 mod sha_256;
 
 use std::{
+    fs::File,
     io::{Read, Write, stdin, stdout},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     ops::Div,
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use log_file::LogFile;
 use sha_256::Sha256;
 
+#[allow(dead_code)]
 fn test() {
     let log: Arc<Mutex<LogFile>> = Arc::new(Mutex::new(LogFile::new()));
 
@@ -36,6 +38,7 @@ fn test() {
     sender_thread.join().expect("Failed to join sender thread");
 }
 
+#[allow(dead_code)]
 fn reciver_thread(
     r_run_flag: Arc<Mutex<bool>>,
     socket: &SocketAddr,
@@ -80,6 +83,7 @@ fn reciver_thread(
     reciver
 }
 
+#[allow(dead_code)]
 fn sender_thread(
     s_run_flag: Arc<Mutex<bool>>,
     socket: &SocketAddr,
@@ -122,6 +126,7 @@ fn sender_thread(
     sender
 }
 
+#[allow(dead_code)]
 fn scanner() {
     let socket = 9999;
     let write_buf = "Uspio sam se spojiti".as_bytes();
@@ -151,8 +156,30 @@ fn scanner() {
 
 fn main() {
     let mut sha_256 = Sha256::new();
-    let message = "abc";
+    // let message = "abc";
+    // let message = "abcdefgijklmnoprstuvz abcdefgijklmnoprstuvz abcdefgijklmn";
 
-    sha_256.update(message.as_bytes());
-    print!("{}", sha_256.finalize())
+    let mut file = File::open("/home/matej/Projects/file_share/test_files/2_kb.txt")
+        .expect("File could not be found!");
+
+    let mut duration_sum = Duration::default();
+    let mut read_count = 0u32;
+    let mut start;
+
+    // let mut buf = [0u8; 1_000_000];
+    let mut buf = [0u8; 1024];
+    while let Ok(n) = file.read(&mut buf) {
+        if n > 0 {
+            start = Instant::now();
+            sha_256.update(&buf);
+            duration_sum += Instant::now().duration_since(start);
+            read_count += 1;
+        } else {
+            break;
+        };
+    }
+
+    println!("{}", sha_256.finalize());
+    println!("Total: {:?}", duration_sum);
+    println!("Avg: {:?}", (duration_sum / read_count));
 }
