@@ -3,4 +3,6 @@ name = "file_share"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[[bin]]
+name = "file_to_socket"
+path = "src/file_to_socket/bin/main.rs"
